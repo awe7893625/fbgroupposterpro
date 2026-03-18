@@ -1,0 +1,14 @@
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.env
+*.sqlite
+*.db
+data/
+.DS_Store
+node_modules/
+frontend/.next/
+frontend/out/
