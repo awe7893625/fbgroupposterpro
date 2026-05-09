@@ -32,7 +32,7 @@ pip install pyinstaller pillow
 $IcoPath = "icons\icon.ico"
 if (-not (Test-Path $IcoPath)) {
     Write-Host "==> Generating icon.ico from icon128.png" -ForegroundColor Yellow
-    python - <<'PY'
+    $py = @'
 from PIL import Image
 import os
 src = "icons/icon128.png"
@@ -43,7 +43,9 @@ img = Image.open(src).convert("RGBA")
 sizes = [(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]
 img.save(out, format="ICO", sizes=sizes)
 print("wrote", out)
-PY
+'@
+    $py | python -
+    if ($LASTEXITCODE -ne 0) { throw "icon generation failed" }
 }
 
 # ── 3. Frontend export (Next.js static) ────────────────────────────────────────
