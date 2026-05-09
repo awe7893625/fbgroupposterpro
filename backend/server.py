@@ -5,6 +5,7 @@ Runs on localhost:3080.
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 import aiohttp_cors
@@ -12,12 +13,45 @@ from aiohttp import WSMsgType, web
 
 from .database import init_db
 from .selenium_engine import selenium_engine
-from .routes import accounts, groups, posts, schedule, report
+from . import license_client
+from .routes import (
+    accounts,
+    groups,
+    posts,
+    schedule,
+    report,
+    license as license_routes,
+    onboard,
+    scrape,
+)
 from .routes import ai as ai_routes
+
+# Paths reachable before license activation. Anything else returns 402.
+LICENSE_PUBLIC_PREFIXES = (
+    "/api/health",
+    "/api/license/",
+    "/api/vault/",  # vault unlock available pre-activation if user wants to migrate
+    "/ws",
+)
 
 logger = logging.getLogger(__name__)
 
-FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "out"
+
+def _resolve_frontend_dir() -> Path:
+    """Locate the Next.js static export.
+
+    - Dev: <project>/frontend/out
+    - PyInstaller frozen (one-folder): sys._MEIPASS/frontend/out
+    """
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        candidate = meipass / "frontend" / "out"
+        if candidate.exists():
+            return candidate
+    return Path(__file__).parent.parent / "frontend" / "out"
+
+
+FRONTEND_DIR = _resolve_frontend_dir()
 PORT = int(os.environ.get("PORT", 3080))
 
 # WebSocket clients registry
@@ -58,10 +92,36 @@ async def health_handler(request):
     )
 
 
+@web.middleware
+async def license_gate_middleware(request, handler):
+    """Block API access when license is not valid. Static assets + license endpoints stay open."""
+    path = request.path
+
+    # Static / non-API requests pass through.
+    if not path.startswith("/api/") and path != "/ws":
+        return await handler(request)
+
+    # Always-public API paths.
+    if any(path.startswith(p) for p in LICENSE_PUBLIC_PREFIXES):
+        return await handler(request)
+
+    status = await license_client.get_status_for_gate()
+    if not status.valid:
+        return web.json_response(
+            {
+                "error": "license_required",
+                "message": status.error or "License not activated",
+                "license_status": status.to_dict(),
+            },
+            status=402,  # Payment Required
+        )
+    return await handler(request)
+
+
 def create_app() -> web.Application:
     init_db()
 
-    app = web.Application()
+    app = web.Application(middlewares=[license_gate_middleware])
 
     # CORS — localhost only
     cors = aiohttp_cors.setup(
@@ -87,12 +147,32 @@ def create_app() -> web.Application:
     app.router.add_get("/api/health", health_handler)
 
     # Register route modules
-    for router_module in [accounts, groups, posts, schedule, report, ai_routes]:
+    for router_module in [
+        accounts,
+        groups,
+        posts,
+        schedule,
+        report,
+        ai_routes,
+        license_routes,
+        onboard,
+        scrape,
+    ]:
         router_module.setup_routes(app, cors)
 
     # Static frontend (Next.js export)
     if FRONTEND_DIR.exists():
         app.router.add_static("/", FRONTEND_DIR, show_index=True)
+
+    # Start license heartbeat after the loop is running.
+    async def _on_startup(_app):
+        license_client.start_heartbeat()
+
+    async def _on_cleanup(_app):
+        license_client.stop_heartbeat()
+
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
 
     return app
 

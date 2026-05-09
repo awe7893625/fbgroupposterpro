@@ -25,6 +25,10 @@ async def list_accounts(request):
                     "email": a.email,
                     "status": a.status,
                     "proxy": a.proxy,
+                    "logged_in": bool(a.cookies_json),
+                    "last_used_at": a.last_used_at.isoformat()
+                    if a.last_used_at
+                    else None,
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                 }
                 for a in accounts
@@ -50,14 +54,20 @@ async def get_account(request):
 
 
 async def create_account(request):
+    """Create an account.
+
+    Password is optional — the recommended flow is interactive login (see /api/onboard/login),
+    which stores session cookies instead of the FB password. We still accept and encrypt a
+    password if the user provides one (for power users who want it as a manual fallback).
+    """
     data = await request.json()
     name = data.get("name", "").strip()
     email = data.get("email", "").strip()
-    password = data.get("password", "")
+    password = data.get("password", "") or ""
     proxy = data.get("proxy")
 
-    if not name or not email or not password:
-        raise web.HTTPBadRequest(reason="name, email, password required")
+    if not name or not email:
+        raise web.HTTPBadRequest(reason="name and email required")
 
     with SessionLocal() as db:
         existing = db.query(Account).filter(Account.email == email).first()
@@ -67,7 +77,7 @@ async def create_account(request):
         account = Account(
             name=name,
             email=email,
-            password_enc=encrypt(password),
+            password_enc=encrypt(password) if password else "",
             proxy=proxy,
             status="active",
         )

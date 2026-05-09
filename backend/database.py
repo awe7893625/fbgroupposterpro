@@ -62,6 +62,8 @@ def _run_migrations():
         except Exception:
             pass  # Column already exists
 
+        # v4: app_state table for license/vault metadata (created via Base.metadata above)
+
 
 def get_db():
     db = SessionLocal()

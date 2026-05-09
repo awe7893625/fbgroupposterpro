@@ -607,6 +607,84 @@ class SeleniumEngine:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    # ────────────────────────────────────────────────────────────
+    # Interactive login
+    # ────────────────────────────────────────────────────────────
+
+    # Cookie names that indicate a logged-in session per platform.
+    _LOGIN_COOKIE_MARKERS = {
+        "fb": ["c_user", "xs"],
+        "threads": ["sessionid", "ig_did"],
+        "instagram": ["sessionid", "ds_user_id"],
+        "x": ["auth_token", "twid"],
+    }
+
+    _LOGIN_URLS = {
+        "fb": "https://www.facebook.com/login",
+        "threads": "https://www.threads.net/login",
+        "instagram": "https://www.instagram.com/accounts/login/",
+        "x": "https://x.com/login",
+    }
+
+    async def interactive_login(
+        self, account_id: int, platform: str = "fb", timeout_sec: int = 600
+    ) -> dict:
+        """Open a visible Chrome window pointed at the platform login page, then poll for the
+        login-marker cookie. When detected, snapshot the cookies and return them as a JSON
+        string the caller can persist.
+
+        Returns:
+          {"success": True, "cookies_json": "...", "platform": "fb"}  on success
+          {"success": False, "error": "..."}                          on failure / timeout
+        """
+        import json as _json
+
+        if platform not in self._LOGIN_COOKIE_MARKERS:
+            return {"success": False, "error": f"Unsupported platform: {platform}"}
+
+        ok = await self.start_browser(account_id, headless=False)
+        if not ok:
+            return {"success": False, "error": "Failed to start Chrome"}
+
+        session = self._sessions[account_id]
+        loop = asyncio.get_running_loop()
+
+        def _navigate():
+            session.driver.get(self._LOGIN_URLS[platform])
+
+        await loop.run_in_executor(None, _navigate)
+
+        markers = self._LOGIN_COOKIE_MARKERS[platform]
+        deadline = time.time() + timeout_sec
+
+        async def _poll_for_login():
+            while time.time() < deadline:
+                try:
+                    cookies = await loop.run_in_executor(
+                        None, session.driver.get_cookies
+                    )
+                    names = {c["name"] for c in cookies}
+                    if any(m in names for m in markers):
+                        return cookies
+                except Exception as e:
+                    logger.warning(f"interactive_login poll error: {e}")
+                await asyncio.sleep(2)
+            return None
+
+        cookies = await _poll_for_login()
+        if cookies is None:
+            return {
+                "success": False,
+                "error": f"Login not detected within {timeout_sec}s",
+            }
+
+        return {
+            "success": True,
+            "platform": platform,
+            "cookies_json": _json.dumps(cookies),
+            "cookie_count": len(cookies),
+        }
+
     async def close_session(self, account_id: int):
         session = self._sessions.get(account_id)
         if session and session.driver:

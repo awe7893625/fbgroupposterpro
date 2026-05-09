@@ -7,6 +7,15 @@ class Base(DeclarativeBase):
     pass
 
 
+class AppState(Base):
+    """Singleton-style key/value store for app-level state (license, vault salt, install_uuid)."""
+
+    __tablename__ = "app_state"
+    key = Column(String(64), primary_key=True)
+    value = Column(Text)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Account(Base):
     __tablename__ = "accounts"
     id = Column(Integer, primary_key=True, autoincrement=True)
