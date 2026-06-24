@@ -164,9 +164,36 @@ def create_app() -> web.Application:
     ]:
         router_module.setup_routes(app, cors)
 
-    # Static frontend (Next.js export)
+    # Static frontend (Next.js static export). NOTE: aiohttp's add_static(show_index=True)
+    # returns a DIRECTORY LISTING for directory paths (e.g. "/" or "/studio/") instead of
+    # serving that folder's index.html — so the app never renders. This custom handler maps
+    # directory paths to their index.html (Next.js export emits per-route index.html files).
     if FRONTEND_DIR.exists():
-        app.router.add_static("/", FRONTEND_DIR, show_index=True)
+        _root = FRONTEND_DIR.resolve()
+
+        async def _serve_frontend(request: web.Request):
+            rel = request.match_info.get("path", "").lstrip("/")
+            target = (FRONTEND_DIR / rel).resolve()
+            # path-traversal guard
+            if _root != target and _root not in target.parents:
+                return web.Response(status=403, text="forbidden")
+            if target.is_dir():
+                target = target / "index.html"
+            if not target.exists():
+                # directory-style route without trailing slash, e.g. /studio -> /studio/index.html
+                alt = FRONTEND_DIR / rel / "index.html"
+                if alt.exists():
+                    target = alt
+                else:
+                    nf = FRONTEND_DIR / "404.html"
+                    return (
+                        web.FileResponse(nf, status=404)
+                        if nf.exists()
+                        else web.Response(status=404)
+                    )
+            return web.FileResponse(target)
+
+        app.router.add_get("/{path:.*}", _serve_frontend)
 
     # Start license heartbeat after the loop is running.
     async def _on_startup(_app):
