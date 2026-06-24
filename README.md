@@ -21,31 +21,31 @@ powershell -ExecutionPolicy Bypass -File build\build_win.ps1 -InnoSetup C:\InnoS
 
 ---
 
-## 📱 手機遙控設定（給客戶）
+## 📱 手機遙控（給客戶，零設定）
 
-用**手機**操作裝在電腦上的 FBPoster Pro。手機與電腦透過 **Tailscale** 私有網路直連，**不經雲端**、免額外費用、安全。
+用**手機**操作裝在電腦上的 FBPoster Pro。**客戶完全不用設定網路**——電腦上的 App 會自動「對外撥號」連到中繼伺服器（`relay.konggoo.uk`），手機掃 QR 即可連上。免裝 Tailscale、免設定防火牆。
 
 ### 你需要
-- 一台裝了 FBPoster Pro 並**保持開機**的 Windows 電腦
+- 一台裝了 FBPoster Pro 並**保持開機**的 Windows 電腦（能上網即可）
 - 你的手機
-- 免費 [Tailscale](https://tailscale.com/) 帳號
 
-### 步驟
-1. **電腦**裝 Tailscale（https://tailscale.com/download ）並登入。
-2. **手機**裝 Tailscale App，用**同一帳號**登入。
-3. 電腦上打開 FBPoster Pro → 左側 **📱 手機遙控** → **啟用遠端**（需先完成授權）→ 依提示**重啟一次** App。
-4. 回「手機遙控」頁會出現 **QR Code**，用手機掃描 → 開啟手機版網頁 → 瀏覽器選單「**加入主畫面**」即像 App。
+### 步驟（30 秒）
+1. 電腦打開 FBPoster Pro → 左側 **📱 手機遙控** → **啟用遠端**（需先完成授權）。
+2. 出現 **QR Code + 配對碼**。
+3. 手機相機掃 QR → 開啟手機版網頁 → 瀏覽器選單「**加入主畫面**」即像一個 App。
+
+完成！手機就能遙控電腦發文了。
 
 ### 常見問題
-- **連不上**：確認手機/電腦的 Tailscale 都「已連線」、且電腦 App 開著。
-- **看不到 QR**：電腦還沒裝/登入 Tailscale，回步驟 1。
-- **換手機/防外流**：「手機遙控」頁點 **重新產生 Token**，舊手機立即失效。
+- **連不上**：確認電腦能上網、且 FBPoster Pro 開著；面板顯示「正在連線到中繼伺服器」表示還在連。
+- **換手機 / 怕外流**：「手機遙控」頁點 **重新產生 Token**，舊 QR 立即失效。
 - **電腦關機就連不到**：對，引擎在電腦跑，電腦要開著。
 
-### 安全
-- 走你自己的 Tailscale 私有網路，外人連不到。
-- QR 內含存取密鑰（Token），**勿外流/截圖給他人**；可隨時重產失效。
-- Facebook 看到的仍是你電腦的家用 IP（風險最低）。
+### 安全 / 架構
+- 資料路徑：手機 → `relay.konggoo.uk`（只負責轉送）→ 你的電腦。中繼**不解密、不留存**你的內容。
+- 每個 `/api` 請求都需要**存取金鑰（Token）**端到端驗證；光知道配對碼無法控制你的電腦。
+- QR 內含 Token，**勿外流/截圖給他人**；可隨時重產失效。
+- 中繼伺服器（relay server / Cloudflare Tunnel）部署見 `relay/relay_server.py`；launchd 服務 `ai.fbgp.relay` + `ai.fbgp.relay-tunnel`。
 
 ---
 

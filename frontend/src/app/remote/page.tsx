@@ -5,6 +5,8 @@ import { QRCodeSVG } from 'qrcode.react'
 interface RemoteStatus {
   enabled: boolean
   token: string
+  pairing_code: string | null
+  relay_host: string | null
   tailscale_ip: string
   port: number
 }
@@ -67,9 +69,9 @@ export default function RemotePage() {
     }
   }
 
-  // http (the PC engine serves plain HTTP on the tailnet — no TLS on this port)
-  const remoteUrl = status?.enabled && status.tailscale_ip
-    ? `http://${status.tailscale_ip}:${status.port}/?token=${status.token}`
+  // Zero-config relay: phone opens https://<relay>/p/<code>/?token=<token> (no Tailscale).
+  const remoteUrl = status?.enabled && status.pairing_code && status.relay_host
+    ? `${status.relay_host}/p/${status.pairing_code}/?token=${status.token}`
     : ''
 
   return (
@@ -94,7 +96,7 @@ export default function RemotePage() {
                 <h3 className="font-semibold text-gray-700">遠端狀態</h3>
                 <p className="text-xs text-gray-500 mt-1">
                   {status?.enabled
-                    ? '遠端存取已啟用，可透過 Tailscale 連線'
+                    ? '遠端存取已啟用，手機掃下方 QR 即可連線'
                     : '遠端存取目前停用'}
                 </p>
               </div>
@@ -146,45 +148,31 @@ export default function RemotePage() {
                 </p>
               </div>
 
-              {status.tailscale_ip && remoteUrl && (
+              {status.pairing_code && remoteUrl ? (
                 <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm mb-6">
-                  <h3 className="font-semibold text-gray-700 mb-3">QR Code</h3>
+                  <h3 className="font-semibold text-gray-700 mb-1">手機掃碼連線</h3>
+                  <p className="text-xs text-gray-500 mb-3">
+                    手機相機掃描下方 QR → 開啟手機版 → 「加入主畫面」即可。免裝任何東西。
+                  </p>
                   <div className="flex flex-col items-center">
-                    {/* QR generated locally (qrcode.react) — the token never leaves this PC */}
+                    {/* QR generated locally (qrcode.react) — built from the relay URL + token */}
                     <div className="border border-gray-200 rounded-lg p-3 bg-white">
                       <QRCodeSVG value={remoteUrl} size={232} level="M" />
                     </div>
-                    <p className="text-xs text-gray-500 mt-3">
-                      手機掃描即可自動連線（已含 Token，請勿外流此 QR）
+                    <div className="mt-3 text-center">
+                      <span className="text-xs text-gray-500">配對碼</span>
+                      <div className="text-2xl font-mono font-bold tracking-widest text-blue-600">
+                        {status.pairing_code}
+                      </div>
+                    </div>
+                    <p className="text-xs text-amber-600 mt-3">
+                      ⚠️ 此 QR 含存取金鑰，請勿外流或截圖給他人
                     </p>
                   </div>
                 </div>
-              )}
-              {!status.tailscale_ip && (
+              ) : (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800 mb-6">
-                  偵測不到 Tailscale IP。請先在這台電腦安裝並登入 Tailscale，再回此頁產生手機連線 QR。
-                </div>
-              )}
-
-              {remoteUrl && (
-                <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm mb-6">
-                  <h3 className="font-semibold text-gray-700 mb-3">Remote URL</h3>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 font-mono break-all">
-                      {remoteUrl}
-                    </code>
-                    <button
-                      onClick={() => navigator.clipboard?.writeText(remoteUrl)}
-                      className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded px-3 py-2 font-medium transition-colors"
-                    >
-                      複製
-                    </button>
-                  </div>
-                  {status.tailscale_ip && (
-                    <p className="text-xs text-gray-500 mt-2">
-                      Tailscale IP: <span className="font-mono">{status.tailscale_ip}</span> · Port: <span className="font-mono">{status.port}</span>
-                    </p>
-                  )}
+                  正在連線到中繼伺服器…（若持續無回應，請確認這台電腦能連上網路）
                 </div>
               )}
             </>
@@ -192,7 +180,7 @@ export default function RemotePage() {
 
           {!status?.enabled && !error && (
             <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400 shadow-sm">
-              遠端存取未啟用。點擊「啟用遠端」以透過 Tailscale 從其他裝置存取本服務。
+              遠端存取未啟用。點擊「啟用遠端」後，用手機掃 QR 即可從手機操作本電腦（免裝任何 App）。
             </div>
           )}
         </>
