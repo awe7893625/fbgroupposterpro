@@ -42,5 +42,20 @@
 - FB 風險不變（同桌面版）。
 - 終端即時串流(SSE/WS)在手機 PWA 跨 tailnet 的穩定性需實測（沿用桌面既有串流）。
 
-## 7. 交付前驗收閘（待實作後逐項補 ✅/⚠️/❌）
-（實作完成後回填）
+## 7. 交付前驗收閘（2026-06-24 Phase 1 實證）
+
+| ID | 結果 | 證據 |
+|----|------|------|
+| FR-1 | ✅ | run() 依 remote_enabled 綁 0.0.0.0/127.0.0.1，BIND_HOST 可覆寫；預設 localhost |
+| FR-2 | ✅ | access_token_middleware；token 閘 9/9 單元測試全 PASS（local 豁免/遠端關 403/無或錯 token 401/有效 200） |
+| FR-3 | ✅ | CORS 改 `*`（token 為 auth、不用 cookie）；手機 PWA 跨來源可呼叫 |
+| FR-4 | ✅ | /remote 面板：開關 + token + Tailscale IP + **本地 qrcode.react QR**（token 不外流）；掃 QR 帶 ?token= |
+| FR-5 | ✅ | manifest.json + sw.js + icons；QueryBootstrap 讀 ?token=/?api= 寫 localStorage；npm build 匯出 out/remote |
+| FR-6 | ⚠️ | AppShell RWD（桌面側欄/手機漢堡抽屜）已做，**未真機逐頁驗**（Phase 2 打磨；含 xterm 終端手機化） |
+| FR-7 | ✅ | /api/remote/enable 自查 license（402 if invalid） |
+
+**安全覆核**：coder 原把 QR 走外部 api.qrserver.com（會把 access token 傳第三方）→ 已改本地 qrcode.react；URL https→http（引擎無 TLS）。token 用 hmac.compare_digest 常數時間比對。
+
+**整合**：全功能安裝包重編含手機遠端頁（REMOTE_PAGE_PACKED=YES）；58-route boot OK。
+
+**待辦（Phase 2）**：FR-6 真機 RWD 打磨、終端手機化、真品牌 PWA icon（現為佔位符）、雲端 relay tier。
