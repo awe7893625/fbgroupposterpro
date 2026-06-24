@@ -14,6 +14,7 @@ from aiohttp import WSMsgType, web
 from .database import init_db
 from .selenium_engine import selenium_engine
 from . import license_client
+from . import remote_access
 from .routes import (
     accounts,
     groups,
@@ -25,12 +26,14 @@ from .routes import (
     scrape,
 )
 from .routes import ai as ai_routes
+from .routes import image as image_routes
 
 # Paths reachable before license activation. Anything else returns 402.
 LICENSE_PUBLIC_PREFIXES = (
     "/api/health",
     "/api/license/",
     "/api/vault/",  # vault unlock available pre-activation if user wants to migrate
+    "/api/remote/",  # remote-access config (local-only; enable() checks license itself)
     "/ws",
 )
 
@@ -121,20 +124,19 @@ async def license_gate_middleware(request, handler):
 def create_app() -> web.Application:
     init_db()
 
-    app = web.Application(middlewares=[license_gate_middleware])
+    # Token gate runs BEFORE the license gate so remote callers are authenticated first.
+    app = web.Application(
+        middlewares=[remote_access.access_token_middleware, license_gate_middleware]
+    )
 
-    # CORS — localhost only
+    # CORS — any origin is allowed because the access TOKEN (X-Access-Token header) is the
+    # real authentication; the phone PWA may be served from a different origin/IP. Cookies
+    # are not used for auth, so credentials stay off (required when origin is "*").
     cors = aiohttp_cors.setup(
         app,
         defaults={
-            "http://localhost:3080": aiohttp_cors.ResourceOptions(
-                allow_credentials=True,
-                expose_headers="*",
-                allow_headers="*",
-                allow_methods="*",
-            ),
-            "http://127.0.0.1:3080": aiohttp_cors.ResourceOptions(
-                allow_credentials=True,
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=False,
                 expose_headers="*",
                 allow_headers="*",
                 allow_methods="*",
@@ -154,9 +156,11 @@ def create_app() -> web.Application:
         schedule,
         report,
         ai_routes,
+        image_routes,
         license_routes,
         onboard,
         scrape,
+        remote_access,
     ]:
         router_module.setup_routes(app, cors)
 
@@ -167,9 +171,15 @@ def create_app() -> web.Application:
     # Start license heartbeat after the loop is running.
     async def _on_startup(_app):
         license_client.start_heartbeat()
+        from .scheduler import start_auto_delete_scheduler
+
+        start_auto_delete_scheduler(interval_minutes=30)
 
     async def _on_cleanup(_app):
         license_client.stop_heartbeat()
+        from .scheduler import stop_auto_delete_scheduler
+
+        stop_auto_delete_scheduler()
 
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
@@ -180,7 +190,15 @@ def create_app() -> web.Application:
 def run():
     app = create_app()
     logging.basicConfig(level=logging.INFO)
-    web.run_app(app, host="127.0.0.1", port=PORT)
+    # Bind beyond loopback only when the user has opted into remote access; otherwise the
+    # engine stays reachable from this PC alone (safe default). BIND_HOST can override.
+    host = os.environ.get("BIND_HOST")
+    if not host:
+        host = "0.0.0.0" if remote_access.is_remote_enabled() else "127.0.0.1"
+    logging.getLogger(__name__).info(
+        "binding %s:%s (remote=%s)", host, PORT, remote_access.is_remote_enabled()
+    )
+    web.run_app(app, host=host, port=PORT)
 
 
 if __name__ == "__main__":
