@@ -26,7 +26,7 @@ from .models import AppState
 logger = logging.getLogger(__name__)
 
 VERCEL_BASE_URL = os.environ.get(
-    "FBP_LICENSE_BASE_URL", "https://fbgroupposter.vercel.app"
+    "FBP_LICENSE_BASE_URL", "https://license.konggoo.uk"
 )
 VERIFY_URL = f"{VERCEL_BASE_URL}/api/verify-license"
 TRIAL_URL = f"{VERCEL_BASE_URL}/api/create-trial"
