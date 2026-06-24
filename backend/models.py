@@ -102,6 +102,7 @@ class PostRecord(Base):
         Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
     )
     fb_post_url = Column(String(1000))
+    fb_post_id = Column(String(64))  # numeric FB story/post id (for GraphQL delete)
     post_url = Column(
         String(1000), nullable=True
     )  # generic post URL for non-FB platforms

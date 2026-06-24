@@ -6,6 +6,7 @@ Process registry: dict[account_id, SessionState] + asyncio.Lock per account
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +96,49 @@ class SeleniumEngine:
                 logger.error(f"Failed to start Chrome for account {account_id}: {e}")
                 return False
 
+    @staticmethod
+    def _detect_chrome_major() -> Optional[int]:
+        """Best-effort: installed Chrome major version, so undetected-chromedriver fetches
+        a MATCHING driver. Without this uc grabs the latest driver, which fails against an
+        older installed Chrome ('ChromeDriver only supports Chrome version N'). Returns None
+        if undetectable (uc then auto-detects, preserving old behaviour)."""
+        # Windows registry (BLBeacon holds the running Chrome version)
+        try:
+            import winreg  # type: ignore
+
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    k = winreg.OpenKey(hive, r"Software\Google\Chrome\BLBeacon")
+                    ver, _ = winreg.QueryValueEx(k, "version")
+                    return int(str(ver).split(".")[0])
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001 - not on Windows
+            pass
+        # Cross-platform fallback: ask the Chrome binary directly
+        try:
+            import subprocess
+
+            for cmd in (
+                ["google-chrome", "--version"],
+                [
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    "--version",
+                ],
+            ):
+                try:
+                    out = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=10
+                    ).stdout
+                    m = re.search(r"(\d+)\.\d+\.\d+", out)
+                    if m:
+                        return int(m.group(1))
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
     def _create_driver(self, profile_dir: str, headless: bool):
         """Blocking: create Chrome driver. Call via run_in_executor."""
         options = DRIVER_OPTIONS_CLASS()
@@ -105,10 +149,32 @@ class SeleniumEngine:
         if headless:
             options.add_argument("--headless=new")
 
-        driver = DRIVER_CLASS(options=options)
+        # Pin the chromedriver to the installed Chrome (uc only). Avoids the
+        # version-mismatch SessionNotCreatedException on boxes with an older Chrome.
+        driver_kwargs = {"options": options}
+        if (
+            "uc" in globals() and DRIVER_CLASS is uc.Chrome
+        ):  # only uc accepts version_main
+            major = self._detect_chrome_major()
+            if major:
+                driver_kwargs["version_main"] = major
+
+        driver = DRIVER_CLASS(**driver_kwargs)
         driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
+        # Install the FB GraphQL response-capture hook on every navigation so _do_post can
+        # read the ComposerStoryCreateMutation response (post_id + permalink) reliably,
+        # instead of scraping the async-rendered React feed.
+        try:
+            from .fb_graphql import COMPOSE_CAPTURE_HOOK
+
+            driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": COMPOSE_CAPTURE_HOOK},
+            )
+        except Exception as e:  # noqa: BLE001 - non-fatal; falls back to DOM scrape
+            logger.warning("Could not install FB capture hook: %s", e)
         return driver
 
     async def take_screenshot(self, account_id: int) -> Optional[str]:
@@ -178,6 +244,124 @@ class SeleniumEngine:
             )
             return {"success": False, "error": str(e)}
 
+    async def delete_post(self, account_id: int, url: str, post_id: str = None) -> bool:
+        """
+        自動下架：優先用 FB 內部 GraphQL（純 requests，免操作 DOM；2026-06-24 實證可用），
+        doc_id 失效或失敗時退回 DOM 刪除。fail-safe：失敗回 False 不拋。
+        排程器(scheduler.sweep_expired_once)會呼叫此方法；回 False → record 標 delete_failed。
+
+        post_id：發文時擷取的數字 story id（建議帶入）；缺省時從 url 解析。
+        """
+        session = self._sessions.get(account_id)
+        if not session or not session.driver:
+            logger.warning(
+                "delete_post: account %s 無 session，無法刪除 %s", account_id, url
+            )
+            return False
+        loop = asyncio.get_running_loop()
+        try:
+            ok = await loop.run_in_executor(
+                None, lambda: self._do_delete(session.driver, url, post_id)
+            )
+            return bool(ok)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_post 失敗 %s: %s", url, e)
+            return False
+
+    def _do_delete(self, driver, url: str, post_id: str = None) -> bool:
+        """刪文（同步）。GraphQL 優先 → DOM fallback。"""
+        from . import fb_graphql
+
+        # --- 1) GraphQL pure-requests delete (no DOM) ---
+        try:
+            cookies = driver.get_cookies()
+            sess = fb_graphql.make_session(cookies)
+            tokens = fb_graphql.fetch_tokens(sess)
+            actor = tokens.get("actor_id")
+            pid = post_id or fb_graphql.resolve_post_id(sess, url)
+            if tokens.get("fb_dtsg") and actor and pid:
+                res = fb_graphql.delete_post_graphql(sess, pid, actor, tokens)
+                if res.get("ok"):
+                    logger.info(
+                        "delete via GraphQL ok: story=%s", res.get("deleted_story_id")
+                    )
+                    return True
+                logger.warning(
+                    "GraphQL delete failed (stale=%s): %s — falling back to DOM",
+                    res.get("doc_id_stale"),
+                    res.get("error"),
+                )
+            else:
+                logger.warning(
+                    "GraphQL delete prerequisites missing (dtsg=%s actor=%s pid=%s) — DOM fallback",
+                    bool(tokens.get("fb_dtsg")),
+                    actor,
+                    pid,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("GraphQL delete raised %s — DOM fallback", e)
+
+        # --- 2) DOM fallback: open permalink, use the post action menu ---
+        return self._dom_delete(driver, url)
+
+    def _dom_delete(self, driver, url: str) -> bool:
+        """Delete via the post's React action menu (validated 2026-06-24 on www FB)."""
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        try:
+            driver.get(url)
+            time.sleep(6)
+            # open the post's "..." action menu (scoped to dialog/article)
+            opened = driver.execute_script(
+                """
+                var conts=Array.from(document.querySelectorAll('div[role="dialog"],div[role="article"]'));
+                var btns=[];
+                conts.forEach(function(c){ c.querySelectorAll('[aria-haspopup="menu"][role="button"],div[role="button"][aria-label]').forEach(function(b){
+                  var l=b.getAttribute('aria-label')||'';
+                  if(l.indexOf('動作')>=0||l.indexOf('選項')>=0||l.indexOf('Actions')>=0) btns.push(b); }); });
+                if(!btns.length) return false;
+                btns[0].scrollIntoView({block:'center'}); btns[0].click(); return true;
+                """
+            )
+            if not opened:
+                return False
+            time.sleep(2)
+            for xp in (
+                "//div[@role='menu']//div[@role='menuitem'][contains(.,'刪除貼文')]",
+                "//div[@role='menu']//div[@role='menuitem'][contains(.,'移至回收筒')]",
+                "//div[@role='menu']//div[@role='menuitem'][contains(.,'刪除')]",
+                "//div[@role='menu']//div[@role='menuitem'][contains(.,'Move to') or contains(.,'Delete')]",
+            ):
+                try:
+                    WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, xp))
+                    ).click()
+                    break
+                except Exception:
+                    continue
+            else:
+                return False
+            time.sleep(2)
+            for xp in (
+                "(//div[@role='dialog'])[last()]//div[@aria-label='刪除' and @role='button']",
+                "(//div[@role='dialog'])[last()]//div[@aria-label='移動' and @role='button']",
+                "(//div[@role='dialog'])[last()]//div[@role='button'][contains(.,'刪除') or contains(.,'移動') or contains(.,'Delete') or contains(.,'Move')]",
+            ):
+                try:
+                    WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, xp))
+                    ).click()
+                    time.sleep(3)
+                    return True
+                except Exception:
+                    continue
+            return False
+        except Exception as e:  # noqa: BLE001
+            logger.warning("DOM delete failed %s: %s", url, e)
+            return False
+
     def _do_post(
         self, driver, group_url: str, content: str, images: list, post_record_id=None
     ) -> dict:
@@ -190,6 +374,15 @@ class SeleniumEngine:
         try:
             driver.get(group_url)
             time.sleep(2 + (hash(group_url) % 3) * 0.5)  # randomized delay 2-3.5s
+
+            # Reset the GraphQL capture buffer for THIS post. The hook only seeds
+            # window.__nexResp=[] once (guarded by __nexHook) and survives navigation, so
+            # without this an earlier post's create-response would leak into this one and
+            # we'd capture (and later store/delete) the wrong post_id.
+            try:
+                driver.execute_script("window.__nexResp = [];")
+            except Exception:  # noqa: BLE001
+                pass
 
             wait = WebDriverWait(driver, 15)
 
@@ -265,13 +458,25 @@ class SeleniumEngine:
                 return {"success": False, "error": "Could not find Post button"}
 
             post_btn.click()
-            time.sleep(3)  # Wait for post to submit
+            time.sleep(5)  # Wait for ComposerStoryCreateMutation to fire + resolve
 
-            current_url = driver.current_url
-            return {
-                "success": True,
-                "post_url": current_url if "facebook.com" in current_url else None,
-            }
+            # Pull the new post's numeric id + permalink from the captured GraphQL
+            # response (COMPOSE_CAPTURE_HOOK), replacing the old fragile DOM scrape that
+            # broke on async-rendered React. Falls back to current_url if not captured.
+            post_url = None
+            post_id = None
+            try:
+                from .fb_graphql import extract_permalink
+
+                resp = driver.execute_script("return window.__nexResp || []")
+                info = extract_permalink(resp or [])
+                post_id = info.get("post_id")
+                post_url = info.get("permalink")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("permalink capture failed: %s", e)
+            if not post_url and "facebook.com" in driver.current_url:
+                post_url = driver.current_url
+            return {"success": True, "post_url": post_url, "post_id": post_id}
 
         except Exception as e:
             return {"success": False, "error": str(e)}

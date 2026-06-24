@@ -64,6 +64,17 @@ def _run_migrations():
 
         # v4: app_state table for license/vault metadata (created via Base.metadata above)
 
+        # v5: fb_post_id column in post_records (numeric id for GraphQL delete)
+        try:
+            conn.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE post_records ADD COLUMN fb_post_id TEXT"
+                )
+            )
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
 
 def get_db():
     db = SessionLocal()

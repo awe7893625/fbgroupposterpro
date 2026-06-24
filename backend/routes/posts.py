@@ -199,6 +199,7 @@ async def _run_post(post_id: int):
                 group_name=g["name"],
                 account_id=account_id,
                 fb_post_url=_post_url if platform == "fb" else None,
+                fb_post_id=result.get("post_id") if platform == "fb" else None,
                 post_url=_post_url,  # generic field for all platforms
                 status="active" if result["success"] else "failed",
                 error_msg=result.get("error"),
