@@ -1,4 +1,7 @@
-const BASE_URL = 'http://localhost:3080'
+function getBase(): string {
+  if (typeof window === 'undefined') return ''
+  return localStorage?.getItem('remote_api_base') || window.location.origin
+}
 
 export class LicenseRequiredError extends Error {
   constructor(public payload: any) {
@@ -8,10 +11,13 @@ export class LicenseRequiredError extends Error {
 }
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(`${getBase()}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(typeof window !== 'undefined' && localStorage?.getItem('remote_token') && {
+        'X-Access-Token': localStorage.getItem('remote_token')!
+      }),
       ...options?.headers,
     },
   })
@@ -53,6 +59,9 @@ export const api = {
 
   // AI
   generateContent: (data: AIGenerateInput) => apiFetch<{variants: string[]}>('/api/ai/generate', { method: 'POST', body: JSON.stringify(data) }),
+
+  // 程式化改圖（品牌浮層/聯絡資訊/外框/拼圖）
+  processImage: (data: ProcessImageInput) => apiFetch<{outputs: string[]}>('/api/image/process', { method: 'POST', body: JSON.stringify(data) }),
 
   // Scrape (591 / HouseBox listing → FB-ready post)
   scrape: (url: string, account_id: number) => apiFetch<ScrapeResponse>('/api/scrape', {
@@ -127,3 +136,4 @@ export interface CreateAccountInput { name: string; email: string; password: str
 export interface CreateGroupInput { account_id: number; url: string; name?: string; tag?: string; platform?: string; platform_entity_id?: string }
 export interface CreatePostInput { account_id: number; content: string; group_ids: number[]; interval_seconds?: number; auto_delete_days?: number; scheduled_at?: string }
 export interface AIGenerateInput { product_data: Record<string, string>; style?: string; variant_count?: number; license_key?: string; device_id?: string }
+export interface ProcessImageInput { paths: string[]; op: 'brand' | 'badge' | 'frame' | 'collage'; agent_name?: string; phone?: string; company?: string; label?: string; out_dir?: string }
