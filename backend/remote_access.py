@@ -130,8 +130,11 @@ async def access_token_middleware(request: web.Request, handler):
     if not path.startswith("/api/") and path != "/ws":
         return await handler(request)
 
-    if _is_local_request(request):
-        return await handler(request)  # desktop UI — always allowed
+    # Genuine desktop UI (loopback) bypasses the token. Requests the relay client replays
+    # are ALSO loopback but carry X-Relay-Forwarded — those are remote-origin, so they fall
+    # through to the token check below (a guessed pairing code must still present a token).
+    if _is_local_request(request) and not request.headers.get("X-Relay-Forwarded"):
+        return await handler(request)
 
     # ---- remote request from here on ----
     # Config endpoints are local-only; never expose the token to a remote caller.
@@ -158,11 +161,15 @@ async def access_token_middleware(request: web.Request, handler):
 
 # ── routes (/api/remote/*) — local-only by the middleware above ─────────────────
 async def _status(request: web.Request):
+    from . import relay_client
+
     return web.json_response(
         {
             "enabled": is_remote_enabled(),
             "token": get_or_create_token(),
-            "tailscale_ip": get_tailscale_ip(),
+            "pairing_code": relay_client.get_pairing_code(),  # zero-config relay path
+            "relay_host": relay_client.get_relay_host(),
+            "tailscale_ip": get_tailscale_ip(),  # legacy/advanced path
             "port": int(os.environ.get("PORT", 3080)),
         }
     )
@@ -170,7 +177,7 @@ async def _status(request: web.Request):
 
 async def _enable(request: web.Request):
     # FR-7: remote requires an active license.
-    from . import license_client
+    from . import license_client, relay_client
 
     status = await license_client.get_status_for_gate()
     if not status.valid:
@@ -180,12 +187,16 @@ async def _enable(request: web.Request):
         )
     set_remote_enabled(True)
     get_or_create_token()
-    return web.json_response({"enabled": True, "restart_required": True})
+    relay_client.start()  # dial out to the relay so a phone can reach this PC
+    return web.json_response({"enabled": True})
 
 
 async def _disable(request: web.Request):
+    from . import relay_client
+
     set_remote_enabled(False)
-    return web.json_response({"enabled": False, "restart_required": True})
+    relay_client.stop()
+    return web.json_response({"enabled": False})
 
 
 async def _regenerate(request: web.Request):

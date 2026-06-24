@@ -201,6 +201,12 @@ def create_app() -> web.Application:
         from .scheduler import start_auto_delete_scheduler
 
         start_auto_delete_scheduler(interval_minutes=30)
+        # If the user previously enabled remote, reconnect to the relay so the phone works
+        # again after an app restart (the relay client dials out — no inbound port needed).
+        if remote_access.is_remote_enabled():
+            from . import relay_client
+
+            relay_client.start()
 
     async def _on_cleanup(_app):
         license_client.stop_heartbeat()
@@ -217,14 +223,10 @@ def create_app() -> web.Application:
 def run():
     app = create_app()
     logging.basicConfig(level=logging.INFO)
-    # Bind beyond loopback only when the user has opted into remote access; otherwise the
-    # engine stays reachable from this PC alone (safe default). BIND_HOST can override.
-    host = os.environ.get("BIND_HOST")
-    if not host:
-        host = "0.0.0.0" if remote_access.is_remote_enabled() else "127.0.0.1"
-    logging.getLogger(__name__).info(
-        "binding %s:%s (remote=%s)", host, PORT, remote_access.is_remote_enabled()
-    )
+    # Always loopback-only: remote phone access goes through the relay (the app dials OUT),
+    # so no inbound port is ever exposed on the customer's network. BIND_HOST can override
+    # for advanced/LAN setups.
+    host = os.environ.get("BIND_HOST", "127.0.0.1")
     web.run_app(app, host=host, port=PORT)
 
 
