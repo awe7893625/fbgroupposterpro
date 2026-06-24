@@ -35,8 +35,9 @@ ArchitecturesAllowed=x64
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
+; English-only wizard (Inno ships Default.isl on every install; the unofficial
+; ChineseTraditional.isl is not bundled and broke reproducible builds). App UI is Chinese.
 Name: "english";    MessagesFile: "compiler:Default.isl"
-Name: "chinesetrad"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked

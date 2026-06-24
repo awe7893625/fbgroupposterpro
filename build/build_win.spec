@@ -6,7 +6,14 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 ROOT = Path(SPECPATH).parent
+
+# Force-bundle every backend submodule. The backend uses lazy (function-level) imports
+# (e.g. selenium_engine imports fb_graphql inside methods), which PyInstaller's static
+# graph can miss — collect_submodules guarantees fb_graphql/scheduler/routes are included.
+_BACKEND_MODULES = collect_submodules('backend')
 
 block_cipher = None
 
@@ -37,7 +44,7 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
-    hiddenimports=[
+    hiddenimports=_BACKEND_MODULES + [
         # SQLAlchemy
         'sqlalchemy.dialects.sqlite',
         'sqlalchemy.dialects.sqlite.pysqlite',
